@@ -409,6 +409,7 @@ function settingsSheet() {
     <p><b>iPhone:</b> open this page in Safari, tap the Share button, then “Add to Home Screen”.</p>
     <p><b>Android:</b> open this page in Chrome, tap the ⋮ menu, then “Add to Home screen”.</p>
     ${DEMO ? '' : `<label class="f">Change my password</label><form id="pwForm" class="row"><input class="in" type="password" name="pw" minlength="8" placeholder="New password (8 or more letters)" autocomplete="new-password" required style="flex:1;min-width:180px"><button class="btn" type="submit">Change</button></form>`}
+    <p class="muted" style="margin-top:20px">App version ${esc(window.KE_VERSION || 1)} <button class="btn" data-act="reload">Get the newest version</button></p>
     <p style="margin-top:28px"><button class="btn wide" data-act="signout">${DEMO ? 'Switch person' : 'Sign out'}</button></p>
     ${DEMO ? '<p><button class="btn danger wide" data-act="demo-reset">Wipe practice data</button></p>' : ''}
   </div>`;
@@ -488,6 +489,7 @@ const ACT = {
     readStoreForm(); S.store_files = S.store_files.filter(x => x.id !== f.id); renderSheet(); renderMain();
     await safe(() => db.removeFile(f, 'store_files'));
   },
+  reload: () => { location.href = location.pathname + '?r=' + Date.now(); },
   'alert-on': () => enableAlerts(),
   'alert-off': () => disableAlerts(),
   'alert-test': async () => {
