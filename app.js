@@ -66,6 +66,7 @@ function demoDb() {
     },
     async fileUrl(row) { const f = d.files.find(x => x.id === row.id); const blob = await (await fetch(f.data)).blob(); return URL.createObjectURL(blob); },
     async removeFile(row) { d.files = d.files.filter(x => x.id !== row.id); save(); },
+    async fn() { return {}; },
     reset() { try { localStorage.removeItem(KEY); } catch (e) { /* ignore */ } d = seed(); }
   };
 }
@@ -98,7 +99,20 @@ function supaDb() {
     async remove(t, id) { ok(await sb.from(t).delete().eq('id', id)); },
     async uploadFile(row, file) { ok(await sb.storage.from('files').upload(row.path, file)); await this.insert('files', row); },
     async fileUrl(row) { return ok(await sb.storage.from('files').createSignedUrl(row.path, 3600)).signedUrl; },
-    async removeFile(row) { await sb.storage.from('files').remove([row.path]); await this.remove('files', row.id); }
+    async removeFile(row) { await sb.storage.from('files').remove([row.path]); await this.remove('files', row.id); },
+    async fn(op, payload) {
+      const { data } = await sb.auth.getSession();
+      const r = await fetch(CFG.supabaseUrl + '/functions/v1/push', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: CFG.supabaseKey, Authorization: 'Bearer ' + (data.session ? data.session.access_token : CFG.supabaseKey) },
+        body: JSON.stringify({ op, ...(payload || {}) })
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error || 'The alert service did not answer.');
+      return j;
+    },
+    async saveSub(sub, email) { ok(await sb.from('push_subs').upsert({ endpoint: sub.endpoint, email, sub })); },
+    async dropSub(endpoint) { ok(await sb.from('push_subs').delete().eq('endpoint', endpoint)); }
   };
 }
 
@@ -138,6 +152,44 @@ async function refresh() {
   }
 }
 
+/* ---------- phone alerts ---------- */
+const PUSH_OK = !DEMO && 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+let alertsOn = false;
+const b64ToBytes = s => { const p = (s + '='.repeat((4 - s.length % 4) % 4)).replace(/-/g, '+').replace(/_/g, '/'); return Uint8Array.from(atob(p), c => c.charCodeAt(0)); };
+const ping = (op, payload) => { db.fn(op, payload).catch(e => console.warn('alert not sent', e)); };
+async function checkAlerts() {
+  if (!PUSH_OK) return;
+  try {
+    const reg = await navigator.serviceWorker.register('sw.js');
+    const sub = await reg.pushManager.getSubscription();
+    alertsOn = !!sub && Notification.permission === 'granted';
+    if (alertsOn) db.saveSub(sub.toJSON(), S.me).catch(() => {});
+  } catch (e) { console.warn(e); }
+}
+async function enableAlerts() {
+  try {
+    const perm = await Notification.requestPermission();
+    if (perm !== 'granted') { toast('Alerts are blocked. Allow notifications for this app in your phone settings.'); return; }
+    await navigator.serviceWorker.register('sw.js');
+    const reg = await navigator.serviceWorker.ready;
+    const { key } = await db.fn('key');
+    const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(key) });
+    await db.saveSub(sub.toJSON(), S.me);
+    alertsOn = true; toast('Alerts are on for this phone.');
+  } catch (e) { console.error(e); toast('Could not turn on alerts: ' + ((e && e.message) || 'unknown problem')); }
+  renderMain(); if (S.sheet && S.sheet.type === 'settings') renderSheet();
+}
+async function disableAlerts(quiet) {
+  if (!PUSH_OK) return;
+  try {
+    const reg = await navigator.serviceWorker.getRegistration();
+    const sub = reg && await reg.pushManager.getSubscription();
+    if (sub) { await db.dropSub(sub.endpoint).catch(() => {}); await sub.unsubscribe(); }
+  } catch (e) { console.warn(e); }
+  alertsOn = false;
+  if (!quiet) { toast('Alerts are off for this phone.'); renderMain(); if (S.sheet && S.sheet.type === 'settings') renderSheet(); }
+}
+
 /* ---------- task actions ---------- */
 async function addEvent(taskId, kind, body) {
   const ev = { id: uid(), task_id: taskId, actor: S.me, kind, body, created_at: nowIso() };
@@ -157,7 +209,7 @@ async function patchTask(id, patch, note, quiet) {
 function setOwner(id, email) {
   const t = taskById(id); if (!t || (t.owner || null) === (email || null)) return;
   const note = !email ? 'removed the owner. Nobody owns this now.' : email === S.me ? 'took this task.' : 'gave this task to ' + nameOf(email) + '.';
-  return patchTask(id, { owner: email || null }, note);
+  return patchTask(id, { owner: email || null }, note).then(() => { if (email && email !== S.me) ping('assigned', { task_id: id }); });
 }
 
 /* ---------- screens ---------- */
@@ -232,6 +284,7 @@ function renderMain() {
     <header class="top"><h1>King Energy<small>${esc(sub)}</small></h1><button data-act="settings">${esc(nameOf(S.me))} ⚙</button></header>
     <main>
       ${DEMO ? '<div class="banner">Practice mode: saved on this device only. Your partners cannot see it yet.</div>' : ''}
+      ${PUSH_OK && !alertsOn ? '<div class="banner">🔔 Alerts are off on this phone. <button class="btn" data-act="alert-on">Turn on</button></div>' : ''}
       ${S.tab === 'tasks' ? tasksView() : `<input class="in" id="search" type="search" placeholder="Search stores…" value="${esc(S.search)}" style="margin-bottom:12px"><div id="storeList">${storeCards()}</div>`}
     </main>
     <button class="fab" data-act="${S.tab === 'tasks' ? 'new-task' : 'new-store'}">+ New ${S.tab === 'tasks' ? 'task' : 'store'}</button>
@@ -314,6 +367,10 @@ function settingsSheet() {
   return `<div class="sheet-head"><button data-act="close">← Back</button><span>Settings</span><span></span></div>
   <div class="sheet-body">
     <p>Signed in as <b>${esc(nameOf(S.me))}</b>${DEMO ? ' (practice mode)' : ' · ' + esc(S.me)}</p>
+    ${DEMO ? '' : `<label class="f">Alerts on this phone</label>
+    ${!PUSH_OK ? '<p class="muted">This browser cannot show alerts yet. On iPhone: add the app to your Home Screen first, open it from there, then come back here.</p>'
+      : alertsOn ? '<p>🔔 Alerts are ON. You get one when a task is given to you, when a new task has no owner, and each morning if something is due, late, or has no owner.</p><div class="row"><button class="btn" data-act="alert-test">Send me a test alert</button><button class="btn" data-act="alert-off">Turn off</button></div>'
+      : '<button class="btn go wide" data-act="alert-on">🔔 Turn on alerts</button>'}`}
     <label class="f">Put the app on your phone</label>
     <p><b>iPhone:</b> open this page in Safari, tap the Share button, then “Add to Home Screen”.</p>
     <p><b>Android:</b> open this page in Chrome, tap the ⋮ menu, then “Add to Home screen”.</p>
@@ -383,7 +440,13 @@ const ACT = {
     if (!confirm('Delete “' + s.name + '” for everyone? This cannot be undone.')) return;
     closeSheet(); await safe(() => db.remove('stores', id)); refresh();
   },
-  signout: async () => { await db.signOut(); S.me = null; closeSheet(); renderLogin(); },
+  'alert-on': () => enableAlerts(),
+  'alert-off': () => disableAlerts(),
+  'alert-test': async () => {
+    const r = await safe(() => db.fn('test'), 'The test alert could not be sent.');
+    if (r) toast(r.sent ? 'Test alert sent. It should pop up in a few seconds.' : 'No alert went out. Turn alerts off and on again.');
+  },
+  signout: async () => { await disableAlerts(true); await db.signOut(); S.me = null; closeSheet(); renderLogin(); },
   'demo-reset': async () => { if (!confirm('Wipe all practice data on this device?')) return; db.reset(); closeSheet(); await refresh(); }
 };
 function setOwnerQuiet(id) {
@@ -412,6 +475,7 @@ document.addEventListener('submit', async e => {
     await safe(async () => {
       await db.insert('tasks', t);
       await addEvent(t.id, 'history', 'created this task' + (owner ? (owner === S.me ? ' and took it.' : ' and gave it to ' + nameOf(owner) + '.') : ' with no owner.'));
+      if (!owner) ping('unowned', { task_id: t.id }); else if (owner !== S.me) ping('assigned', { task_id: t.id });
     });
     if (!owner) toast('Saved. Nobody owns it yet.');
   } else if (f.id === 'storeForm') {
@@ -463,6 +527,7 @@ async function start() {
     const who = S.me; await db.signOut(); S.me = null;
     renderLogin(who + ' is not on the King Energy list.'); return;
   }
+  await checkAlerts();
   renderMain();
 }
 
