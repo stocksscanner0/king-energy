@@ -158,6 +158,58 @@ async function refresh() {
   }
 }
 
+/* ---------- picture card for sharing ---------- */
+function wrapLines(g, text, maxW, maxLines) {
+  const words = String(text).split(/\s+/), lines = []; let cur = '';
+  for (const w of words) { const t = cur ? cur + ' ' + w : w; if (!cur || g.measureText(t).width <= maxW) cur = t; else { lines.push(cur); cur = w; } }
+  if (cur) lines.push(cur);
+  if (lines.length > maxLines) { lines.length = maxLines; lines[maxLines - 1] = lines[maxLines - 1].replace(/.{0,2}$/, '…'); }
+  return lines;
+}
+function taskCardBlob(t) {
+  const W = 1080, P = 64, F = '"Segoe UI", system-ui, -apple-system, Roboto, "Helvetica Neue", sans-serif';
+  const late = isLate(t), nobody = !t.owner && t.status !== 'done';
+  const STC = { todo: '#64748b', working: '#1d5fd1', stuck: '#c77700', done: '#12805c' };
+  const cv = document.createElement('canvas'); let g = cv.getContext('2d');
+  g.font = 'bold 66px ' + F; const titleLines = wrapLines(g, t.title, W - 2 * P, 4);
+  const last = S.events.filter(e => e.task_id === t.id && e.kind === 'comment').sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
+  g.font = '40px ' + F; const lastLines = last ? wrapLines(g, nameOf(last.actor) + ': ' + last.body, W - 2 * P - 56, 3) : [];
+  const banner = late ? 'LATE  ·  ' + dueText(t).toUpperCase() : nobody ? 'NOBODY OWNS THIS YET' : '';
+  const H = 180 + (banner ? 100 : 0) + 70 + titleLines.length * 82 + 30 + 3 * 100 + (lastLines.length ? 50 + lastLines.length * 54 + 50 : 0) + 120;
+  cv.width = W; cv.height = H; g = cv.getContext('2d'); g.textBaseline = 'middle';
+  const box = (x, y, w, h, r, color) => { g.fillStyle = color; g.beginPath(); if (g.roundRect) g.roundRect(x, y, w, h, r); else g.rect(x, y, w, h); g.fill(); };
+  g.fillStyle = '#ffffff'; g.fillRect(0, 0, W, H);
+  // header
+  g.fillStyle = '#0f2742'; g.fillRect(0, 0, W, 180);
+  box(P, 46, 88, 88, 20, '#f5a623'); g.fillStyle = '#0f2742'; g.font = 'bold 44px ' + F; g.textAlign = 'center'; g.fillText('KE', P + 44, 92);
+  g.textAlign = 'left'; g.fillStyle = '#ffffff'; g.font = 'bold 52px ' + F; g.fillText('King Energy', P + 116, 74);
+  g.fillStyle = '#f5a623'; g.font = '32px ' + F; g.fillText('TASK', P + 118, 124);
+  let y = 180;
+  if (banner) { g.fillStyle = late ? '#d92d20' : '#f5a623'; g.fillRect(0, y, W, 100); g.fillStyle = late ? '#ffffff' : '#1b1300'; g.font = 'bold 44px ' + F; g.fillText((late ? '⚠  ' : '🚨  ') + banner, P, y + 52); y += 100; }
+  // title
+  y += 70; g.fillStyle = '#14202e'; g.font = 'bold 66px ' + F;
+  for (const line of titleLines) { g.fillText(line, P, y + 30); y += 82; }
+  y += 30;
+  // rows
+  const row = (label, value, color) => {
+    g.fillStyle = '#64748b'; g.font = 'bold 30px ' + F; g.fillText(label, P, y + 50);
+    if (color) { g.font = 'bold 40px ' + F; const w = g.measureText(value).width + 56; box(P + 250, y + 14, w, 72, 36, color); g.fillStyle = '#ffffff'; g.fillText(value, P + 278, y + 52); }
+    else { g.fillStyle = '#14202e'; g.font = 'bold 46px ' + F; g.fillText(value, P + 250, y + 50); }
+    g.fillStyle = '#e3e8ee'; g.fillRect(P, y + 99, W - 2 * P, 2); y += 100;
+  };
+  row('OWNER', t.owner ? nameOf(t.owner) : 'Nobody yet');
+  row('DUE', t.due ? niceDate(t.due) + (t.status !== 'done' && !late && dueText(t) !== niceDate(t.due) ? '  (' + dueText(t) + ')' : '') : 'No date');
+  row('STATUS', STATUS[t.status], STC[t.status]);
+  if (lastLines.length) {
+    y += 50; const h = lastLines.length * 54 + 40; box(P, y - 20, W - 2 * P, h, 22, '#eef3f9'); box(P, y - 20, 10, h, 5, '#1d5fd1');
+    g.fillStyle = '#14202e'; g.font = '40px ' + F; let yy = y + 28; for (const line of lastLines) { g.fillText(line, P + 36, yy); yy += 54; }
+    y += h + 10;
+  }
+  g.fillStyle = '#64748b'; g.font = '30px ' + F; g.fillText('Open the app to update:  ' + location.host + location.pathname.replace(/\/$/, ''), P, H - 56);
+  return new Promise(res => cv.toBlob(res, 'image/png'));
+}
+window.KE_card = id => taskCardBlob(taskById(id));
+
 /* ---------- phone alerts ---------- */
 const PUSH_OK = !DEMO && 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
 let alertsOn = false;
@@ -441,9 +493,16 @@ const ACT = {
     await safe(() => addEvent(S.sheet.id, 'comment', text));
     renderSheet(); renderMain();
   },
-  share: el => {
+  share: async el => {
     const t = taskById(el.dataset.id);
     const text = `King Energy task\n*${t.title}*\nOwner: ${t.owner ? nameOf(t.owner) : 'NOBODY YET'}\nDue: ${t.due ? niceDate(t.due) : 'no date'}\nStatus: ${STATUS[t.status]}${isLate(t) ? ' (LATE)' : ''}\n${location.origin + location.pathname}`;
+    try {
+      const blob = await taskCardBlob(t);
+      const file = new File([blob], 'king-energy-task.png', { type: 'image/png' });
+      if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], text }); return; }
+      const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'king-energy-task.png'; a.click();
+      toast('Picture saved. Attach it in WhatsApp.');
+    } catch (e) { if (e && e.name === 'AbortError') return; console.warn(e); }
     window.open('https://wa.me/?text=' + encodeURIComponent(text), '_blank', 'noopener');
   },
   'del-task': async () => {
