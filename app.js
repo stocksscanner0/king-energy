@@ -3,7 +3,8 @@
 
 /* ---------- small helpers ---------- */
 const CFG = window.KE_CONFIG || {};
-const DEMO = !CFG.supabaseUrl || !CFG.supabaseKey;
+// Practice mode: when no storage is set up, or on this computer only with ?demo=1 (used for testing).
+const DEMO = !CFG.supabaseUrl || !CFG.supabaseKey || (location.hostname === 'localhost' && /[?&]demo=1/.test(location.search));
 const $ = (s, r = document) => r.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const uid = () => crypto.randomUUID();
@@ -45,7 +46,7 @@ function demoDb() {
   let d = null;
   try { d = JSON.parse(localStorage.getItem(KEY)); } catch (e) { /* storage blocked */ }
   if (!d) d = seed();
-  d.store_files = d.store_files || [];
+  d.store_files = d.store_files || []; d.activity = d.activity || [];
   const save = () => { try { localStorage.setItem(KEY, JSON.stringify(d)); } catch (e) { /* ignore */ } };
   return {
     async init() {},
@@ -69,7 +70,7 @@ function demoDb() {
     async fileUrl(row) { const f = d.files.concat(d.store_files).find(x => x.id === row.id); const blob = await (await fetch(f.data)).blob(); return URL.createObjectURL(blob); },
     async removeFile(row, table = 'files') { d[table] = d[table].filter(x => x.id !== row.id); save(); },
     async fn() { return {}; },
-    reset() { try { localStorage.removeItem(KEY); } catch (e) { /* ignore */ } d = seed(); d.store_files = []; }
+    reset() { try { localStorage.removeItem(KEY); } catch (e) { /* ignore */ } d = seed(); d.store_files = []; d.activity = []; }
   };
 }
 
@@ -92,8 +93,8 @@ function supaDb() {
     async signOut() { await sb.auth.signOut(); },
     async setPassword(pw) { ok(await sb.auth.updateUser({ password: pw })); },
     async loadAll() {
-      const names = ['members', 'tasks', 'events', 'files', 'stores', 'store_files'];
-      const rs = await Promise.all(names.map(n => sb.from(n).select('*')));
+      const names = ['members', 'tasks', 'events', 'files', 'stores', 'store_files', 'activity'];
+      const rs = await Promise.all(names.map(n => n === 'activity' ? sb.from(n).select('*').order('created_at', { ascending: false }).limit(100) : sb.from(n).select('*')));
       const out = {}; rs.forEach((r, i) => { out[names[i]] = ok(r); }); return out;
     },
     async insert(t, row) { ok(await sb.from(t).insert(row)); },
@@ -121,11 +122,18 @@ function supaDb() {
 const db = DEMO ? demoDb() : supaDb();
 
 /* ---------- state ---------- */
-const KINDS = [['contract', '📄 Contract'], ['site', '📷 Site picture'], ['screenshot', '📱 Screenshot'], ['other', '📎 Other']];
+const KINDS = [['contract', '📄 Contract'], ['site', '📷 Site picture'], ['screenshot', '📱 Screenshot'], ['offer_world_fuel', '💲 Offer from World Fuel'], ['est_keshav', '🧾 Estimate from Keshav'], ['est_jf', '🧾 Estimate from JF'], ['est_others', '🧾 Estimate from others'], ['other', '📎 Other']];
+const KIND_COLOR = { contract: '#1d5fd1', site: '#12805c', screenshot: '#8b3fd1', offer_world_fuel: '#b4530a', est_keshav: '#0e7490', est_jf: '#be185d', est_others: '#4d7c0f', other: '#64748b' };
+const kindLabel = k => { const f = KINDS.find(x => x[0] === k); return f ? f[1] : '🏷 ' + (k || 'Other'); };
+const kindPlain = k => kindLabel(k).replace(/^\S+\s/, '');
+const kindColor = k => KIND_COLOR[k] || '#7c3aed';
+const STORE_FIELDS = [['name', 'Store name'], ['owner_name', 'Owner or contact'], ['phone', 'Phone'], ['email', 'Email'], ['address', 'Address'], ['landlord_name', 'Landlord name'], ['landlord_phone', 'Landlord number'], ['landlord_email', 'Landlord email'], ['notes', 'Notes']];
+const storeDraft = s => { const d = { extra: (s.extra || []).map(x => ({ label: x.label, value: x.value })), newFiles: [], removeFiles: [], kind: 'site', customKind: '' }; STORE_FIELDS.forEach(([k]) => { d[k] = s[k] || ''; }); return d; };
+const ACT_ICON = { store: '🏪', task_new: '🆕', task_taken: '🙋' };
 const isImage = n => /\.(png|jpe?g|gif|webp|bmp|avif)$/i.test(n || '');
 const HUES = [210, 150, 28, 280, 345, 175, 50, 240];
 const thumbUrls = new Map();
-const S = { store_files: [], me: null, members: [], tasks: [], events: [], files: [], stores: [], tab: 'tasks', filter: 'all', sheet: null, search: '', draftComment: '' };
+const S = { store_files: [], activity: [], me: null, members: [], tasks: [], events: [], files: [], stores: [], tab: 'tasks', filter: 'all', sheet: null, search: '', draftComment: '' };
 const nameOf = email => { const m = S.members.find(x => x.email === email); return m ? m.name : (email || ''); };
 const isLate = t => t.status !== 'done' && t.due && t.due < today();
 const taskById = id => S.tasks.find(t => t.id === id);
@@ -150,6 +158,7 @@ async function refresh() {
     const d = await db.loadAll();
     S.members = d.members.sort((a, b) => a.name.localeCompare(b.name));
     S.tasks = d.tasks; S.events = d.events; S.files = d.files; S.stores = d.stores; S.store_files = d.store_files || [];
+    S.activity = (d.activity || []).sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
   } catch (e) { console.error(e); toast('Could not load. Check your internet.'); return; }
   renderMain();
   const sheetEl = $('#sheet');
@@ -257,6 +266,36 @@ async function addEvent(taskId, kind, body) {
   S.events.push(ev);
   await db.insert('events', ev);
 }
+// One line in the bell list. It also asks the server to send the phone alert and the email.
+async function logActivity(kind, title, body) {
+  const a = { id: uid(), actor: S.me, kind, title, body: body || '', created_at: nowIso() };
+  S.activity.unshift(a);
+  await db.insert('activity', a);
+  ping('notify', { activity_id: a.id });
+}
+const seenKey = () => 'ke_seen_' + S.me;
+const lastSeen = () => { try { return localStorage.getItem(seenKey()) || ''; } catch (e) { return ''; } };
+const unseenCount = () => { const s = lastSeen(); return S.activity.filter(a => a.actor !== S.me && (a.created_at || '') > s).length; };
+const taskFacts = t => 'Owner: ' + (t.owner ? nameOf(t.owner) : 'Nobody yet') + '\nDue: ' + (t.due ? niceDate(t.due) : 'No date');
+
+function storeChanges(old, fields, extra, newFiles, removed) {
+  const lines = [], o = old || {};
+  STORE_FIELDS.forEach(([k, label]) => {
+    const a = String(o[k] || '').trim(), b = fields[k] || ''; if (a === b) return;
+    lines.push(!a ? label + ': ' + b : !b ? label + ': removed (was ' + a + ')' : label + ': ' + a + ' → ' + b);
+  });
+  const oe = o.extra || [], used = new Set();
+  extra.forEach(x => {
+    const i = oe.findIndex((y, j) => !used.has(j) && y.label === x.label);
+    if (i < 0) { lines.push('Added box: ' + x.label + ' = ' + x.value); return; }
+    used.add(i); if ((oe[i].value || '') !== x.value) lines.push(x.label + ': ' + (oe[i].value || '(empty)') + ' → ' + (x.value || '(empty)'));
+  });
+  oe.forEach((y, j) => { if (!used.has(j)) lines.push('Removed box: ' + y.label + (y.value ? ' (was ' + y.value + ')' : '')); });
+  newFiles.forEach(f => lines.push('Added file: ' + kindPlain(f.kind) + ' – ' + f.name));
+  removed.forEach(f => lines.push('Removed file: ' + kindPlain(f.kind || 'other') + ' – ' + f.name));
+  return lines;
+}
+
 async function patchTask(id, patch, note, quiet) {
   const t = taskById(id); if (!t) return;
   patch.updated_at = nowIso();
@@ -270,7 +309,10 @@ async function patchTask(id, patch, note, quiet) {
 function setOwner(id, email) {
   const t = taskById(id); if (!t || (t.owner || null) === (email || null)) return;
   const note = !email ? 'removed the owner. Nobody owns this now.' : email === S.me ? 'took this task.' : 'gave this task to ' + nameOf(email) + '.';
-  return patchTask(id, { owner: email || null }, note).then(() => { if (email && email !== S.me) ping('assigned', { task_id: id }); });
+  return patchTask(id, { owner: email || null }, note).then(() => {
+    if (email && email !== S.me) ping('assigned', { task_id: id });
+    else if (email === S.me) logActivity('task_taken', nameOf(S.me) + ' picked up: ' + t.title, taskFacts(t)).catch(e => console.warn(e));
+  });
 }
 
 /* ---------- screens ---------- */
@@ -346,7 +388,7 @@ function renderMain() {
   const nLate = open.filter(isLate).length, nNobody = open.filter(t => !t.owner).length;
   const sub = [nLate ? nLate + ' late' : '', nNobody ? nNobody + ' with no owner' : ''].filter(Boolean).join(' · ') || 'All tasks have an owner and are on time';
   $('#app').innerHTML = `
-    <header class="top"><h1>King Energy<small>${esc(sub)}</small></h1><button data-act="settings">${esc(nameOf(S.me))} ⚙</button></header>
+    <header class="top"><h1>King Energy<small>${esc(sub)}</small></h1><button data-act="refresh" aria-label="Refresh">↻</button><button data-act="bell" class="bell" aria-label="Recent changes">🔔${unseenCount() ? `<b class="badge">${unseenCount()}</b>` : ''}</button><button data-act="settings">${esc(nameOf(S.me))} ⚙</button></header>
     <main>
       ${DEMO ? '<div class="banner">Practice mode: saved on this device only. Your partners cannot see it yet.</div>' : ''}
       ${PUSH_OK && !alertsOn ? '<div class="banner">🔔 Alerts are off on this phone. <button class="btn" data-act="alert-on">Turn on</button></div>' : ''}
@@ -369,6 +411,15 @@ function renderSheet() {
   else if (sh.type === 'new-task') el.innerHTML = newTaskSheet(sh.draft);
   else if (sh.type === 'store') { el.innerHTML = storeSheet(sh); loadThumbs(); }
   else if (sh.type === 'settings') el.innerHTML = settingsSheet();
+  else if (sh.type === 'activity') el.innerHTML = activitySheet();
+}
+
+function activitySheet() {
+  return `<div class="sheet-head"><button data-act="close">← Back</button><span>Recent changes</span><span></span></div>
+  <div class="sheet-body">${S.activity.length ? S.activity.slice(0, 60).map(a => `<div class="act">
+    <div class="act-t">${ACT_ICON[a.kind] || '•'} ${esc(a.title)}</div>
+    <div class="when">${esc(nameOf(a.actor))} · ${esc(niceTime(a.created_at))}</div>
+    ${a.body ? `<div class="act-b">${esc(a.body)}</div>` : ''}</div>`).join('') : '<p class="empty">Nothing yet. New tasks, picked-up tasks and store changes will show here.</p>'}</div>`;
 }
 
 function newTaskSheet(d) {
@@ -414,21 +465,31 @@ function loadThumbs() {
   });
 }
 function storeFilesBlock(sh) {
-  if (!sh.id) return '<label class="f">Contracts, pictures and files</label><p class="muted">Save the store first. Then open it again to add contracts and pictures.</p>';
-  const files = S.store_files.filter(f => f.store_id === sh.id);
-  const kind = sh.kind || 'site', label = KINDS.find(k => k[0] === kind)[1];
-  const groups = KINDS.map(([k, l]) => {
-    const fs = files.filter(f => (f.kind || 'other') === k); if (!fs.length) return '';
-    return `<div class="sf-head k-${k}">${l} (${fs.length})</div><div class="tiles">${fs.map(f => `<div class="tile">
-      ${isImage(f.name) ? `<img data-thumb="${f.id}" data-act="sf-open" data-id="${f.id}" alt="${esc(f.name)}">` : `<button type="button" class="doc" data-act="sf-open" data-id="${f.id}">📄</button>`}
-      <button type="button" class="x" data-act="sf-del" data-id="${f.id}" aria-label="Remove">✕</button><span class="nm">${esc(f.name)}</span></div>`).join('')}</div>`;
+  const d = sh.draft;
+  const kept = sh.id ? S.store_files.filter(f => f.store_id === sh.id && !d.removeFiles.includes(f.id)) : [];
+  const all = kept.map(f => ({ ...f, pending: false })).concat(d.newFiles.map(f => ({ ...f, pending: true })));
+  const kinds = [...new Set(KINDS.map(k => k[0]).concat(all.map(f => f.kind || 'other')))];
+  const groups = kinds.map(k => {
+    const fs = all.filter(f => (f.kind || 'other') === k); if (!fs.length) return '';
+    return `<div class="sf-head" style="background:${kindColor(k)}">${esc(kindLabel(k))} (${fs.length})</div><div class="tiles">${fs.map(f => `<div class="tile${f.pending ? ' pending' : ''}">
+      ${isImage(f.name) ? (f.pending ? `<img src="${esc(f.preview)}" alt="${esc(f.name)}">` : `<img data-thumb="${f.id}" data-act="sf-open" data-id="${f.id}" alt="${esc(f.name)}">`) : `<button type="button" class="doc"${f.pending ? '' : ` data-act="sf-open" data-id="${f.id}"`}>📄</button>`}
+      <button type="button" class="x" data-act="sf-del" data-id="${f.id}" aria-label="Remove">✕</button><span class="nm">${f.pending ? 'Not saved yet · ' : ''}${esc(f.name)}</span></div>`).join('')}</div>`;
   }).join('');
-  return `<label class="f">Contracts, pictures and files (${files.length})</label>
-    <p class="muted" style="margin:0 0 6px">Pick what it is, then tap Add.</p>
-    <div class="row">${KINDS.map(([k, l]) => `<button type="button" class="btn kind k-${k}${kind === k ? ' on' : ''}" data-act="sf-kind" data-v="${k}">${l}</button>`).join('')}</div>
-    <p><label class="btn go">+ Add ${esc(label.slice(2).trim())}<input type="file" id="storeFileIn" multiple hidden${kind === 'site' || kind === 'screenshot' ? ' accept="image/*"' : ''}></label></p>
+  const kind = d.kind || 'site', custom = kind === '__custom';
+  return `<label class="f">Contracts, pictures and files (${all.length})</label>
+    <p class="muted" style="margin:0 0 6px">Pick what it is, then tap Add. Files are kept when you tap Save store.</p>
+    <select class="in" id="sfKind">${KINDS.map(([k, l]) => `<option value="${k}"${kind === k ? ' selected' : ''}>${l}</option>`).join('')}<option value="__custom"${custom ? ' selected' : ''}>✏️ Custom (type your own)</option></select>
+    ${custom ? `<input class="in" id="sfCustom" placeholder="Type a name, like Tank test report" value="${esc(d.customKind || '')}" style="margin-top:6px">` : ''}
+    <p><label class="btn go">+ Add file or picture<input type="file" id="storeFileIn" multiple hidden></label></p>
     ${groups}`;
 }
+const xrowHtml = (x, i) => {
+  const custom = x.custom || (!!x.label && !EXTRA_IDEAS.includes(x.label));
+  return `<div class="xrow"><select class="in" data-x="pick"><option value="">Pick one…</option>${EXTRA_IDEAS.map(v => `<option${!custom && x.label === v ? ' selected' : ''}>${esc(v)}</option>`).join('')}<option value="__custom"${custom ? ' selected' : ''}>✏️ Custom (type your own)</option></select>
+    <button type="button" data-act="x-del" data-i="${i}" aria-label="Remove box">✕</button>
+    ${custom ? `<input class="in" data-x="label" placeholder="Name of the box" value="${esc(x.label)}">` : ''}
+    <input class="in" data-x="value" placeholder="Answer" value="${esc(x.value)}"></div>`;
+};
 
 function storeSheet(sh) {
   const d = sh.draft;
@@ -441,9 +502,13 @@ function storeSheet(sh) {
     <label class="f">Phone</label><input class="in" type="tel" name="phone" value="${esc(d.phone)}">
     <label class="f">Email</label><input class="in" type="email" name="email" value="${esc(d.email)}">
     <label class="f">Address</label><input class="in" name="address" value="${esc(d.address)}">
+    <div class="group"><div class="group-t">🏠 Landlord</div>
+    <label class="f">Landlord name</label><input class="in" name="landlord_name" value="${esc(d.landlord_name)}">
+    <label class="f">Landlord number</label><input class="in" type="tel" name="landlord_phone" value="${esc(d.landlord_phone)}">
+    ${sh.id && (d.landlord_phone || '').replace(/[^\d+]/g, '') ? `<p><a class="btn" href="tel:${esc(d.landlord_phone.replace(/[^\d+]/g, ''))}">📞 Call landlord</a></p>` : ''}
+    <label class="f">Landlord email</label><input class="in" type="email" name="landlord_email" value="${esc(d.landlord_email)}"></div>
     <label class="f">More boxes (tanks, pumps, POS, anything)</label>
-    <div id="xrows">${d.extra.map((x, i) => `<div class="xrow"><input class="in" list="ideas" data-x="label" placeholder="What" value="${esc(x.label)}"><input class="in" data-x="value" placeholder="Answer" value="${esc(x.value)}"><button type="button" data-act="x-del" data-i="${i}" aria-label="Remove box">✕</button></div>`).join('')}</div>
-    <datalist id="ideas">${EXTRA_IDEAS.map(v => `<option value="${esc(v)}">`).join('')}</datalist>
+    <div id="xrows">${d.extra.map(xrowHtml).join('')}</div>
     <button type="button" class="btn" data-act="x-add">+ Add a box</button>
     <label class="f">Notes</label><textarea class="in" name="notes">${esc(d.notes)}</textarea>
     ${storeFilesBlock(sh)}
@@ -458,7 +523,7 @@ function settingsSheet() {
     <p>Signed in as <b>${esc(nameOf(S.me))}</b>${DEMO ? ' (practice mode)' : ' · ' + esc(S.me)}</p>
     ${DEMO ? '' : `<label class="f">Alerts on this phone</label>
     ${!PUSH_OK ? '<p class="muted">This browser cannot show alerts yet. On iPhone: add the app to your Home Screen first, open it from there, then come back here.</p>'
-      : alertsOn ? '<p>🔔 Alerts are ON. You get one when a task is given to you, when a new task has no owner, and each morning if something is due, late, or has no owner.</p><div class="row"><button class="btn" data-act="alert-test">Send me a test alert</button><button class="btn" data-act="alert-off">Turn off</button></div>'
+      : alertsOn ? '<p>🔔 Alerts are ON. You get one when a task is created, picked up, or given to you, when a store is changed, and each morning if something is due, late, or has no owner.</p><div class="row"><button class="btn" data-act="alert-test">Send me a test alert</button><button class="btn" data-act="alert-off">Turn off</button></div>'
       : '<button class="btn go wide" data-act="alert-on">🔔 Turn on alerts</button>'}`}
     <label class="f">Put the app on your phone</label>
     <p><b>iPhone:</b> open this page in Safari, tap the Share button, then “Add to Home Screen”.</p>
@@ -472,8 +537,13 @@ function settingsSheet() {
 
 function readStoreForm() {
   const f = $('#storeForm'), d = S.sheet.draft; if (!f) return d;
-  ['name', 'owner_name', 'phone', 'email', 'address', 'notes'].forEach(k => { d[k] = f.elements[k].value.trim(); });
-  d.extra = [...f.querySelectorAll('.xrow')].map(r => ({ label: $('[data-x=label]', r).value.trim(), value: $('[data-x=value]', r).value.trim() }));
+  STORE_FIELDS.forEach(([k]) => { d[k] = f.elements[k].value.trim(); });
+  d.extra = [...f.querySelectorAll('.xrow')].map(r => {
+    const pick = $('[data-x=pick]', r).value, custom = pick === '__custom', li = $('[data-x=label]', r);
+    return { label: custom ? (li ? li.value.trim() : '') : pick, value: $('[data-x=value]', r).value.trim(), custom };
+  });
+  const ks = $('#sfKind'); if (ks) d.kind = ks.value;
+  const kc = $('#sfCustom'); if (kc) d.customKind = kc.value.trim();
   return d;
 }
 
@@ -483,7 +553,12 @@ const ACT = {
   tab: el => { S.tab = el.dataset.v; renderMain(); window.scrollTo(0, 0); },
   filter: el => { S.filter = el.dataset.v; renderMain(); },
   settings: () => openSheet({ type: 'settings' }),
-  close: () => closeSheet(),
+  close: () => {
+    if (S.sheet && S.sheet.type === 'store' && S.sheet.draft.newFiles.length && !confirm('You added files but did not tap Save store. Leave without saving them?')) return;
+    closeSheet();
+  },
+  refresh: async () => { await refresh(); checkVersion(); toast('Up to date.'); },
+  bell: () => { openSheet({ type: 'activity' }); try { localStorage.setItem(seenKey(), nowIso()); } catch (e) { /* ignore */ } renderMain(); },
   'open-task': el => openSheet({ type: 'task', id: el.dataset.id }),
   take: el => { const id = el.dataset.id; const t = taskById(id); if (!t) return; setOwnerQuiet(id); },
   'new-task': () => openSheet({ type: 'new-task', draft: { title: '', owner: null, due: '', details: '' } }),
@@ -532,28 +607,29 @@ const ACT = {
     S.files = S.files.filter(x => x.id !== f.id); renderSheet(); renderMain();
     await safe(async () => { await db.removeFile(f); await addEvent(f.task_id, 'history', 'removed the file ' + f.name + '.'); renderSheet(); });
   },
-  'new-store': () => openSheet({ type: 'store', id: null, draft: { name: '', owner_name: '', phone: '', email: '', address: '', notes: '', extra: [] } }),
-  'open-store': el => { const s = S.stores.find(x => x.id === el.dataset.id); openSheet({ type: 'store', id: s.id, draft: { name: s.name || '', owner_name: s.owner_name || '', phone: s.phone || '', email: s.email || '', address: s.address || '', notes: s.notes || '', extra: (s.extra || []).map(x => ({ ...x })) } }); },
-  'x-add': () => { readStoreForm().extra.push({ label: '', value: '' }); renderSheet(); const rows = document.querySelectorAll('.xrow'); if (rows.length) $('input', rows[rows.length - 1]).focus(); },
+  'new-store': () => openSheet({ type: 'store', id: null, draft: storeDraft({}) }),
+  'open-store': el => { const s = S.stores.find(x => x.id === el.dataset.id); openSheet({ type: 'store', id: s.id, draft: storeDraft(s) }); },
+  'x-add': () => { readStoreForm().extra.push({ label: '', value: '' }); renderSheet(); },
   'x-del': el => { readStoreForm().extra.splice(+el.dataset.i, 1); renderSheet(); },
   'del-store': async () => {
     const id = S.sheet.id, s = S.stores.find(x => x.id === id);
     if (!confirm('Delete “' + s.name + '” and its files for everyone? This cannot be undone.')) return;
     const files = S.store_files.filter(f => f.store_id === id);
-    closeSheet(); await safe(async () => { for (const f of files) await db.removeFile(f, 'store_files'); await db.remove('stores', id); }); refresh();
+    closeSheet();
+    await safe(async () => { for (const f of files) await db.removeFile(f, 'store_files'); await db.remove('stores', id); await logActivity('store', 'Store deleted: ' + s.name, 'The store and its ' + files.length + ' file(s) were removed.'); });
+    refresh();
   },
-  'sf-kind': el => { readStoreForm(); S.sheet.kind = el.dataset.v; renderSheet(); },
   'sf-open': async el => {
     const f = S.store_files.find(x => x.id === el.dataset.id); const w = window.open('', '_blank');
     const url = await safe(() => db.fileUrl(f), 'Could not open the file.');
     if (!url) { if (w) w.close(); return; }
     if (w) w.location = url; else location.href = url;
   },
-  'sf-del': async el => {
-    const f = S.store_files.find(x => x.id === el.dataset.id);
-    if (!confirm('Remove “' + f.name + '”?')) return;
-    readStoreForm(); S.store_files = S.store_files.filter(x => x.id !== f.id); renderSheet(); renderMain();
-    await safe(() => db.removeFile(f, 'store_files'));
+  'sf-del': el => {
+    const d = readStoreForm(), id = el.dataset.id, i = d.newFiles.findIndex(x => x.id === id);
+    if (i >= 0) { if (d.newFiles[i].preview) URL.revokeObjectURL(d.newFiles[i].preview); d.newFiles.splice(i, 1); }
+    else { d.removeFiles.push(id); toast('It will be removed when you tap Save store.'); }
+    renderSheet();
   },
   reload: () => { location.href = location.pathname + '?r=' + Date.now(); },
   'alert-on': () => enableAlerts(),
@@ -567,7 +643,7 @@ const ACT = {
 };
 function setOwnerQuiet(id) {
   const t = taskById(id); t.owner = S.me; t.updated_at = nowIso(); renderMain(); toast('It is yours now.');
-  safe(async () => { await db.update('tasks', id, { owner: S.me, updated_at: t.updated_at }); await addEvent(id, 'history', 'took this task.'); });
+  safe(async () => { await db.update('tasks', id, { owner: S.me, updated_at: t.updated_at }); await addEvent(id, 'history', 'took this task.'); await logActivity('task_taken', nameOf(S.me) + ' picked up: ' + t.title, taskFacts(t)); });
 }
 
 document.addEventListener('click', e => {
@@ -591,18 +667,33 @@ document.addEventListener('submit', async e => {
     await safe(async () => {
       await db.insert('tasks', t);
       await addEvent(t.id, 'history', 'created this task' + (owner ? (owner === S.me ? ' and took it.' : ' and gave it to ' + nameOf(owner) + '.') : ' with no owner.'));
-      if (!owner) ping('unowned', { task_id: t.id }); else if (owner !== S.me) ping('assigned', { task_id: t.id });
+      await logActivity('task_new', 'New task: ' + t.title, taskFacts(t) + (t.details ? '\nDetails: ' + t.details : ''));
     });
     if (!owner) toast('Saved. Nobody owns it yet.');
   } else if (f.id === 'storeForm') {
-    const d = readStoreForm(); d.extra = d.extra.filter(x => x.label || x.value);
-    const id = S.sheet.id, stamp = nowIso();
+    const d = readStoreForm();
+    const extra = d.extra.filter(x => x.label || x.value).map(x => ({ label: x.label || 'Note', value: x.value }));
+    const isNew = !S.sheet.id, id = S.sheet.id || uid(), stamp = nowIso();
+    const old = isNew ? null : S.stores.find(x => x.id === id);
+    const fields = {}; STORE_FIELDS.forEach(([k]) => { fields[k] = d[k]; });
+    const removed = S.store_files.filter(x => d.removeFiles.includes(x.id));
+    const newFiles = d.newFiles.slice();
+    const lines = storeChanges(old, fields, extra, newFiles, removed);
     closeSheet();
-    await safe(async () => {
-      if (id) await db.update('stores', id, { ...d, updated_by: S.me, updated_at: stamp });
-      else await db.insert('stores', { id: uid(), ...d, created_by: S.me, updated_by: S.me, created_at: stamp, updated_at: stamp });
+    if (!isNew && !lines.length) { toast('Nothing changed.'); return; }
+    toast('Saving…');
+    const saved = await safe(async () => {
+      if (isNew) await db.insert('stores', { id, ...fields, extra, created_by: S.me, updated_by: S.me, created_at: stamp, updated_at: stamp });
+      else await db.update('stores', id, { ...fields, extra, updated_by: S.me, updated_at: stamp });
+      for (const nf of newFiles) {
+        const row = { id: nf.id, store_id: id, kind: nf.kind, name: nf.name, size: nf.size, path: 'stores/' + id + '/' + nf.id + '-' + nf.name.replace(/[^\w.\-]+/g, '_'), uploaded_by: S.me, created_at: stamp };
+        await db.uploadFile(row, nf.file, 'store_files');
+      }
+      for (const f of removed) await db.removeFile(f, 'store_files');
+      await logActivity('store', (isNew ? 'New store: ' : 'Store updated: ') + fields.name, lines.join('\n'));
+      return true;
     });
-    await refresh(); toast('Store saved.');
+    await refresh(); if (saved) toast('Store saved. Your partners are being told.');
   } else if (f.id === 'pwForm') {
     await safe(async () => { await db.setPassword(f.elements.pw.value); f.reset(); toast('Password changed.'); }, 'Could not change the password.');
   }
@@ -621,16 +712,13 @@ document.addEventListener('change', async e => {
     if (S.sheet && S.sheet.id === taskId) renderSheet();
     renderMain();
   } else if (el.id === 'storeFileIn') {
-    const storeId = S.sheet.id, kind = S.sheet.kind || 'site', picked = [...el.files];
-    readStoreForm();
-    for (const file of picked) {
-      toast('Adding ' + file.name + '…');
-      const fid = uid();
-      const row = { id: fid, store_id: storeId, kind, name: file.name, size: file.size, path: 'stores/' + storeId + '/' + fid + '-' + file.name.replace(/[^\w.\-]+/g, '_'), uploaded_by: S.me, created_at: nowIso() };
-      await safe(async () => { await db.uploadFile(row, file, 'store_files'); S.store_files.push(row); toast('Added.'); });
-    }
-    if (S.sheet && S.sheet.id === storeId) renderSheet();
-    renderMain();
+    const d = readStoreForm(), picked = [...el.files]; let kind = d.kind || 'site';
+    if (kind === '__custom') { kind = d.customKind; if (!kind) { el.value = ''; toast('Type a name for it first, then tap Add.'); return; } }
+    for (const file of picked) d.newFiles.push({ id: uid(), kind, name: file.name, size: file.size, file, preview: isImage(file.name) ? URL.createObjectURL(file) : '' });
+    renderSheet(); toast('Added. Tap Save store to keep it.');
+  } else if (el.id === 'sfKind' || el.dataset.x === 'pick') {
+    readStoreForm(); renderSheet();
+    if (el.id === 'sfKind' && el.value === '__custom') { const c = $('#sfCustom'); if (c) c.focus(); }
   } else if (el.dataset.field && S.sheet && S.sheet.type === 'task') {
     const t = taskById(S.sheet.id), k = el.dataset.field; let v = el.value.trim();
     if (k === 'title') { if (!v) { el.value = t.title; return; } if (v !== t.title) patchTask(t.id, { title: v }, 'renamed this task.', true); }
@@ -643,6 +731,20 @@ document.addEventListener('input', e => {
   if (e.target.id === 'comment') S.draftComment = e.target.value;
   else if (e.target.id === 'search') { S.search = e.target.value; $('#storeList').innerHTML = storeCards(); }
 });
+
+/* ---------- keep the app itself up to date ---------- */
+async function checkVersion() {
+  if (S.sheet) return; // never reload while someone is typing in a page
+  try {
+    const r = await fetch('version.json?x=' + Date.now(), { cache: 'no-store' }); if (!r.ok) return;
+    const v = Number((await r.json()).v);
+    if (!(v > Number(window.KE_VERSION || 0))) return;
+    let tried = null; try { tried = sessionStorage.getItem('ke_tried'); } catch (e) { /* ignore */ }
+    if (tried === String(v)) return;
+    try { sessionStorage.setItem('ke_tried', String(v)); } catch (e) { /* ignore */ }
+    location.replace(location.pathname + '?v=' + v);
+  } catch (e) { /* offline: try again next time */ }
+}
 
 /* ---------- start ---------- */
 async function start() {
@@ -661,7 +763,12 @@ async function start() {
 (async () => {
   try { await db.init(); await start(); }
   catch (e) { console.error(e); $('#app').innerHTML = '<p class="loading">Could not start. Check your internet and reload.</p>'; }
-  document.addEventListener('visibilitychange', () => { if (!document.hidden && S.me) refresh(); });
+  checkVersion();
+  let lastWake = 0;
+  const wake = () => { if (document.hidden || Date.now() - lastWake < 3000) return; lastWake = Date.now(); checkVersion(); if (S.me) refresh(); };
+  document.addEventListener('visibilitychange', wake);
+  window.addEventListener('pageshow', wake);
+  window.addEventListener('focus', wake);
   setInterval(() => { if (!document.hidden && S.me && !['INPUT', 'TEXTAREA'].includes((document.activeElement || {}).tagName)) refresh(); }, 60000);
 })();
 })();

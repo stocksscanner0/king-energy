@@ -130,6 +130,21 @@ label.f { font-size: 11.5px; margin: 12px 0 4px; }
 .ev.h { font-size: 12px; }
 #toast { bottom: calc(110px + env(safe-area-inset-bottom)); padding: 9px 12px; font-size: 13.5px; }
 
+/* ---------- v6: bell, drop-downs, landlord group ---------- */
+.top { gap: 6px; }
+.top .bell { position: relative; }
+.badge { position: absolute; top: -5px; right: -5px; min-width: 17px; height: 17px; padding: 0 4px; border-radius: 9px; background: #d92d20; color: #fff; font-size: 10.5px; line-height: 17px; text-align: center; }
+select.in { width: 100%; border: 1px solid var(--line); background: var(--card); border-radius: 10px; padding: 8px 10px; font-size: 16px; }
+.xrow { display: grid; grid-template-columns: 1fr auto; gap: 6px; margin-bottom: 10px; padding: 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); }
+.xrow input { grid-column: 1 / -1; flex: none !important; }
+.group { border: 1px solid var(--line); border-left: 4px solid #0e7490; border-radius: 10px; padding: 2px 10px 10px; margin-top: 14px; background: var(--card); }
+.group-t { font-weight: 700; margin-top: 8px; }
+.tile.pending { border: 2px dashed var(--accent); }
+.act { padding: 9px 0; border-bottom: 1px solid var(--line); }
+.act-t { font-weight: 700; overflow-wrap: anywhere; }
+.act .when { color: var(--muted); font-size: 12px; margin: 1px 0 3px; }
+.act-b { white-space: pre-wrap; font-size: 13px; overflow-wrap: anywhere; background: var(--grey-bg); border-radius: 8px; padding: 6px 8px; }
+
 /* ---------- colorful stores ---------- */
 .store-card { --h: 210; border: 1px solid hsl(var(--h) 55% 80%); border-left: 5px solid hsl(var(--h) 65% 45%); background: hsl(var(--h) 85% 96%); }
 .store-top { display: flex; align-items: center; gap: 8px; }
