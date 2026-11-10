@@ -96,3 +96,60 @@ input.title-in { font-size: 20px; font-weight: 700; }
 .login h1 { margin: 0 0 4px; }
 .login .btn { margin-top: 10px; }
 #toast { position: fixed; left: 16px; right: 16px; bottom: calc(130px + env(safe-area-inset-bottom)); z-index: 40; background: #14202e; color: #fff; padding: 12px 14px; border-radius: 10px; text-align: center; max-width: 420px; margin: 0 auto; }
+
+/* ---------- compact sizing (v2) ---------- */
+html, body { font-size: 14px; line-height: 1.35; }
+input.in, textarea.in, input[type=search] { font-size: 16px; padding: 8px 10px; } /* 16px stops iPhone from zooming in */
+input.title-in { font-size: 17px; }
+textarea.in { min-height: 64px; }
+.top { padding: calc(7px + env(safe-area-inset-top)) 12px 7px; }
+.top h1 { font-size: 16px; }
+.top h1 small { font-size: 11px; }
+.top button, .sheet-head button { padding: 6px 10px; font-size: 13px; }
+.sheet-head { padding: calc(7px + env(safe-area-inset-top)) 12px 7px; }
+main { padding: 8px 12px 120px; }
+.sheet-body { padding: 10px 12px 50px; }
+.banner { padding: 6px 10px; font-size: 13px; margin-bottom: 8px; }
+.chips { gap: 6px; margin-bottom: 8px; }
+.chip { padding: 5px 11px; font-size: 13px; }
+h2.sec { font-size: 11.5px; margin: 12px 0 5px; }
+.nobody { padding: 9px; border-radius: 12px; }
+.nobody h2 { font-size: 14px; }
+.nobody p { font-size: 12.5px; margin-bottom: 7px; }
+.card { padding: 8px 10px; margin-bottom: 6px; border-radius: 10px; border-left-width: 4px; }
+.card-top { margin-bottom: 3px; }
+.card-title { font-size: 14.5px; }
+.card-meta { gap: 10px; margin-top: 3px; font-size: 12.5px; }
+.card .take { margin-top: 7px; }
+.pill { font-size: 10.5px; padding: 1px 6px; }
+.btn { padding: 7px 11px; border-radius: 9px; font-size: 13.5px; }
+label.f { font-size: 11.5px; margin: 12px 0 4px; }
+.tabs button { padding: 9px 4px; font-size: 13.5px; }
+.fab { padding: 10px 15px; font-size: 14px; bottom: calc(54px + env(safe-area-inset-bottom)); right: 12px; }
+.ev { padding: 6px 0; font-size: 13.5px; }
+.ev.h { font-size: 12px; }
+#toast { bottom: calc(110px + env(safe-area-inset-bottom)); padding: 9px 12px; font-size: 13.5px; }
+
+/* ---------- colorful stores ---------- */
+.store-card { --h: 210; border: 1px solid hsl(var(--h) 55% 80%); border-left: 5px solid hsl(var(--h) 65% 45%); background: hsl(var(--h) 85% 96%); }
+.store-top { display: flex; align-items: center; gap: 8px; }
+.avatar { flex: 0 0 28px; width: 28px; height: 28px; border-radius: 50%; background: hsl(var(--h) 65% 45%); color: #fff; font-weight: 700; display: grid; place-items: center; font-size: 14px; }
+.tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+.tag { font-size: 11.5px; padding: 2px 7px; border-radius: 10px; background: hsl(var(--h) 70% 88%); color: hsl(var(--h) 60% 24%); overflow-wrap: anywhere; }
+@media (prefers-color-scheme: dark) {
+  .store-card { background: hsl(var(--h) 35% 16%); border-color: hsl(var(--h) 35% 30%); border-left-color: hsl(var(--h) 65% 55%); }
+  .tag { background: hsl(var(--h) 35% 26%); color: hsl(var(--h) 70% 85%); }
+}
+
+/* ---------- store contracts, pictures, files ---------- */
+.btn.kind.k-contract { border-color: #1d5fd1; } .btn.kind.k-site { border-color: #12805c; }
+.btn.kind.k-screenshot { border-color: #8b3fd1; } .btn.kind.k-other { border-color: #8a5a00; }
+.btn.kind.k-contract.on { background: #1d5fd1; color: #fff; border-color: #1d5fd1; } .btn.kind.k-site.on { background: #12805c; color: #fff; border-color: #12805c; }
+.btn.kind.k-screenshot.on { background: #8b3fd1; color: #fff; border-color: #8b3fd1; } .btn.kind.k-other.on { background: #8a5a00; color: #fff; border-color: #8a5a00; }
+.sf-head { font-weight: 700; font-size: 13px; margin: 12px 0 6px; padding: 4px 8px; border-radius: 7px; color: #fff; }
+.sf-head.k-contract { background: #1d5fd1; } .sf-head.k-site { background: #12805c; } .sf-head.k-screenshot { background: #8b3fd1; } .sf-head.k-other { background: #8a5a00; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 8px; }
+.tile { position: relative; background: var(--card); border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }
+.tile img, .tile .doc { display: block; width: 100%; height: 84px; object-fit: cover; border: 0; background: var(--grey-bg); font-size: 34px; cursor: pointer; }
+.tile .x { position: absolute; top: 3px; right: 3px; width: 22px; height: 22px; border-radius: 50%; border: 0; background: rgba(0,0,0,.6); color: #fff; font-size: 12px; line-height: 1; padding: 0; }
+.tile .nm { display: block; font-size: 11px; padding: 3px 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--muted); }

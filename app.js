@@ -45,6 +45,7 @@ function demoDb() {
   let d = null;
   try { d = JSON.parse(localStorage.getItem(KEY)); } catch (e) { /* storage blocked */ }
   if (!d) d = seed();
+  d.store_files = d.store_files || [];
   const save = () => { try { localStorage.setItem(KEY, JSON.stringify(d)); } catch (e) { /* ignore */ } };
   return {
     async init() {},
@@ -57,17 +58,18 @@ function demoDb() {
     async remove(t, id) {
       d[t] = d[t].filter(x => x.id !== id);
       if (t === 'tasks') { d.events = d.events.filter(e => e.task_id !== id); d.files = d.files.filter(f => f.task_id !== id); }
+      if (t === 'stores') d.store_files = d.store_files.filter(f => f.store_id !== id);
       save();
     },
-    async uploadFile(row, file) {
+    async uploadFile(row, file, table = 'files') {
       if (file.size > 400000) throw new Error('Practice mode can only keep small files (under 400 KB). Real mode has no such limit.');
       row.data = await new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.onerror = rej; fr.readAsDataURL(file); });
-      d.files.push({ ...row }); save();
+      d[table].push({ ...row }); save();
     },
-    async fileUrl(row) { const f = d.files.find(x => x.id === row.id); const blob = await (await fetch(f.data)).blob(); return URL.createObjectURL(blob); },
-    async removeFile(row) { d.files = d.files.filter(x => x.id !== row.id); save(); },
+    async fileUrl(row) { const f = d.files.concat(d.store_files).find(x => x.id === row.id); const blob = await (await fetch(f.data)).blob(); return URL.createObjectURL(blob); },
+    async removeFile(row, table = 'files') { d[table] = d[table].filter(x => x.id !== row.id); save(); },
     async fn() { return {}; },
-    reset() { try { localStorage.removeItem(KEY); } catch (e) { /* ignore */ } d = seed(); }
+    reset() { try { localStorage.removeItem(KEY); } catch (e) { /* ignore */ } d = seed(); d.store_files = []; }
   };
 }
 
@@ -90,16 +92,16 @@ function supaDb() {
     async signOut() { await sb.auth.signOut(); },
     async setPassword(pw) { ok(await sb.auth.updateUser({ password: pw })); },
     async loadAll() {
-      const names = ['members', 'tasks', 'events', 'files', 'stores'];
+      const names = ['members', 'tasks', 'events', 'files', 'stores', 'store_files'];
       const rs = await Promise.all(names.map(n => sb.from(n).select('*')));
       const out = {}; rs.forEach((r, i) => { out[names[i]] = ok(r); }); return out;
     },
     async insert(t, row) { ok(await sb.from(t).insert(row)); },
     async update(t, id, patch) { ok(await sb.from(t).update(patch).eq('id', id)); },
     async remove(t, id) { ok(await sb.from(t).delete().eq('id', id)); },
-    async uploadFile(row, file) { ok(await sb.storage.from('files').upload(row.path, file)); await this.insert('files', row); },
+    async uploadFile(row, file, table = 'files') { ok(await sb.storage.from('files').upload(row.path, file)); await this.insert(table, row); },
     async fileUrl(row) { return ok(await sb.storage.from('files').createSignedUrl(row.path, 3600)).signedUrl; },
-    async removeFile(row) { await sb.storage.from('files').remove([row.path]); await this.remove('files', row.id); },
+    async removeFile(row, table = 'files') { await sb.storage.from('files').remove([row.path]); await this.remove(table, row.id); },
     async fn(op, payload) {
       const { data } = await sb.auth.getSession();
       const r = await fetch(CFG.supabaseUrl + '/functions/v1/push', {
@@ -119,7 +121,11 @@ function supaDb() {
 const db = DEMO ? demoDb() : supaDb();
 
 /* ---------- state ---------- */
-const S = { me: null, members: [], tasks: [], events: [], files: [], stores: [], tab: 'tasks', filter: 'all', sheet: null, search: '', draftComment: '' };
+const KINDS = [['contract', '📄 Contract'], ['site', '📷 Site picture'], ['screenshot', '📱 Screenshot'], ['other', '📎 Other']];
+const isImage = n => /\.(png|jpe?g|gif|webp|bmp|avif)$/i.test(n || '');
+const HUES = [210, 150, 28, 280, 345, 175, 50, 240];
+const thumbUrls = new Map();
+const S = { store_files: [], me: null, members: [], tasks: [], events: [], files: [], stores: [], tab: 'tasks', filter: 'all', sheet: null, search: '', draftComment: '' };
 const nameOf = email => { const m = S.members.find(x => x.email === email); return m ? m.name : (email || ''); };
 const isLate = t => t.status !== 'done' && t.due && t.due < today();
 const taskById = id => S.tasks.find(t => t.id === id);
@@ -143,7 +149,7 @@ async function refresh() {
   try {
     const d = await db.loadAll();
     S.members = d.members.sort((a, b) => a.name.localeCompare(b.name));
-    S.tasks = d.tasks; S.events = d.events; S.files = d.files; S.stores = d.stores;
+    S.tasks = d.tasks; S.events = d.events; S.files = d.files; S.stores = d.stores; S.store_files = d.store_files || [];
   } catch (e) { console.error(e); toast('Could not load. Check your internet.'); return; }
   renderMain();
   const sheetEl = $('#sheet');
@@ -269,10 +275,14 @@ function storeCards() {
   const list = S.stores.filter(s => !q || JSON.stringify([s.name, s.owner_name, s.phone, s.address, s.notes, s.extra]).toLowerCase().includes(q))
     .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
   if (!list.length) return `<p class="empty">${S.stores.length ? 'No store matches.' : 'No stores yet. Tap “+ New store” to add one.'}</p>`;
-  return list.map(s => `<div class="card" data-act="open-store" data-id="${s.id}">
-    <div class="card-title">${esc(s.name || 'No name')}</div>
-    <div class="card-meta">${s.owner_name ? `<span>👤 ${esc(s.owner_name)}</span>` : ''}${s.phone ? `<span>📞 ${esc(s.phone)}</span>` : ''}${s.address ? `<span>📍 ${esc(s.address)}</span>` : ''}</div>
-  </div>`).join('');
+  return list.map((s, i) => {
+    const nf = S.store_files.filter(f => f.store_id === s.id).length;
+    const tags = (s.extra || []).filter(x => x.label && x.value).slice(0, 3);
+    return `<div class="card store-card" style="--h:${HUES[i % HUES.length]}" data-act="open-store" data-id="${s.id}">
+    <div class="store-top"><span class="avatar">${esc((s.name || '?').trim().charAt(0).toUpperCase())}</span><div class="card-title">${esc(s.name || 'No name')}</div></div>
+    <div class="card-meta">${s.owner_name ? `<span>👤 ${esc(s.owner_name)}</span>` : ''}${s.phone ? `<span>📞 ${esc(s.phone)}</span>` : ''}${s.address ? `<span>📍 ${esc(s.address)}</span>` : ''}${nf ? `<span>📎 ${nf}</span>` : ''}</div>
+    ${tags.length ? `<div class="tags">${tags.map(x => `<span class="tag">${esc(x.label)}: ${esc(x.value)}</span>`).join('')}</div>` : ''}
+  </div>`; }).join('');
 }
 
 function renderMain() {
@@ -302,7 +312,7 @@ function renderSheet() {
   el.hidden = false;
   if (sh.type === 'task') el.innerHTML = taskSheet(taskById(sh.id));
   else if (sh.type === 'new-task') el.innerHTML = newTaskSheet(sh.draft);
-  else if (sh.type === 'store') el.innerHTML = storeSheet(sh);
+  else if (sh.type === 'store') { el.innerHTML = storeSheet(sh); loadThumbs(); }
   else if (sh.type === 'settings') el.innerHTML = settingsSheet();
 }
 
@@ -342,6 +352,29 @@ function taskSheet(t) {
   </div>`;
 }
 
+function loadThumbs() {
+  document.querySelectorAll('#sheet img[data-thumb]').forEach(async img => {
+    const id = img.dataset.thumb, f = S.store_files.find(x => x.id === id); if (!f) return;
+    try { if (!thumbUrls.has(id)) thumbUrls.set(id, await db.fileUrl(f)); img.src = thumbUrls.get(id); } catch (e) { console.warn(e); }
+  });
+}
+function storeFilesBlock(sh) {
+  if (!sh.id) return '<label class="f">Contracts, pictures and files</label><p class="muted">Save the store first. Then open it again to add contracts and pictures.</p>';
+  const files = S.store_files.filter(f => f.store_id === sh.id);
+  const kind = sh.kind || 'site', label = KINDS.find(k => k[0] === kind)[1];
+  const groups = KINDS.map(([k, l]) => {
+    const fs = files.filter(f => (f.kind || 'other') === k); if (!fs.length) return '';
+    return `<div class="sf-head k-${k}">${l} (${fs.length})</div><div class="tiles">${fs.map(f => `<div class="tile">
+      ${isImage(f.name) ? `<img data-thumb="${f.id}" data-act="sf-open" data-id="${f.id}" alt="${esc(f.name)}">` : `<button type="button" class="doc" data-act="sf-open" data-id="${f.id}">📄</button>`}
+      <button type="button" class="x" data-act="sf-del" data-id="${f.id}" aria-label="Remove">✕</button><span class="nm">${esc(f.name)}</span></div>`).join('')}</div>`;
+  }).join('');
+  return `<label class="f">Contracts, pictures and files (${files.length})</label>
+    <p class="muted" style="margin:0 0 6px">Pick what it is, then tap Add.</p>
+    <div class="row">${KINDS.map(([k, l]) => `<button type="button" class="btn kind k-${k}${kind === k ? ' on' : ''}" data-act="sf-kind" data-v="${k}">${l}</button>`).join('')}</div>
+    <p><label class="btn go">+ Add ${esc(label.slice(2).trim())}<input type="file" id="storeFileIn" multiple hidden${kind === 'site' || kind === 'screenshot' ? ' accept="image/*"' : ''}></label></p>
+    ${groups}`;
+}
+
 function storeSheet(sh) {
   const d = sh.draft;
   const digits = (d.phone || '').replace(/[^\d+]/g, '');
@@ -358,6 +391,7 @@ function storeSheet(sh) {
     <datalist id="ideas">${EXTRA_IDEAS.map(v => `<option value="${esc(v)}">`).join('')}</datalist>
     <button type="button" class="btn" data-act="x-add">+ Add a box</button>
     <label class="f">Notes</label><textarea class="in" name="notes">${esc(d.notes)}</textarea>
+    ${storeFilesBlock(sh)}
     <p></p><button class="btn go wide" type="submit">Save store</button>
     ${sh.id ? '<p style="margin-top:32px"><button type="button" class="btn danger" data-act="del-store">Delete this store</button></p>' : ''}
   </form>`;
@@ -437,8 +471,22 @@ const ACT = {
   'x-del': el => { readStoreForm().extra.splice(+el.dataset.i, 1); renderSheet(); },
   'del-store': async () => {
     const id = S.sheet.id, s = S.stores.find(x => x.id === id);
-    if (!confirm('Delete “' + s.name + '” for everyone? This cannot be undone.')) return;
-    closeSheet(); await safe(() => db.remove('stores', id)); refresh();
+    if (!confirm('Delete “' + s.name + '” and its files for everyone? This cannot be undone.')) return;
+    const files = S.store_files.filter(f => f.store_id === id);
+    closeSheet(); await safe(async () => { for (const f of files) await db.removeFile(f, 'store_files'); await db.remove('stores', id); }); refresh();
+  },
+  'sf-kind': el => { readStoreForm(); S.sheet.kind = el.dataset.v; renderSheet(); },
+  'sf-open': async el => {
+    const f = S.store_files.find(x => x.id === el.dataset.id); const w = window.open('', '_blank');
+    const url = await safe(() => db.fileUrl(f), 'Could not open the file.');
+    if (!url) { if (w) w.close(); return; }
+    if (w) w.location = url; else location.href = url;
+  },
+  'sf-del': async el => {
+    const f = S.store_files.find(x => x.id === el.dataset.id);
+    if (!confirm('Remove “' + f.name + '”?')) return;
+    readStoreForm(); S.store_files = S.store_files.filter(x => x.id !== f.id); renderSheet(); renderMain();
+    await safe(() => db.removeFile(f, 'store_files'));
   },
   'alert-on': () => enableAlerts(),
   'alert-off': () => disableAlerts(),
@@ -503,6 +551,17 @@ document.addEventListener('change', async e => {
       await safe(async () => { await db.uploadFile(row, file); S.files.push(row); await addEvent(taskId, 'history', 'added the file ' + file.name + '.'); toast('File added.'); });
     }
     if (S.sheet && S.sheet.id === taskId) renderSheet();
+    renderMain();
+  } else if (el.id === 'storeFileIn') {
+    const storeId = S.sheet.id, kind = S.sheet.kind || 'site', picked = [...el.files];
+    readStoreForm();
+    for (const file of picked) {
+      toast('Adding ' + file.name + '…');
+      const fid = uid();
+      const row = { id: fid, store_id: storeId, kind, name: file.name, size: file.size, path: 'stores/' + storeId + '/' + fid + '-' + file.name.replace(/[^\w.\-]+/g, '_'), uploaded_by: S.me, created_at: nowIso() };
+      await safe(async () => { await db.uploadFile(row, file, 'store_files'); S.store_files.push(row); toast('Added.'); });
+    }
+    if (S.sheet && S.sheet.id === storeId) renderSheet();
     renderMain();
   } else if (el.dataset.field && S.sheet && S.sheet.type === 'task') {
     const t = taskById(S.sheet.id), k = el.dataset.field; let v = el.value.trim();
