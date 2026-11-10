@@ -206,7 +206,10 @@ function taskCardBlob(t) {
     y += h + 10;
   }
   g.fillStyle = '#64748b'; g.font = '30px ' + F; g.fillText('Open the app to update:  ' + location.host + location.pathname.replace(/\/$/, ''), P, H - 56);
-  return new Promise(res => cv.toBlob(res, 'image/png'));
+  // Made right away (no waiting), so the phone still treats the share as coming from the tap.
+  const bin = atob(cv.toDataURL('image/png').split(',')[1]), arr = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+  return new Blob([arr], { type: 'image/png' });
 }
 window.KE_card = id => taskCardBlob(taskById(id));
 
@@ -493,16 +496,20 @@ const ACT = {
     await safe(() => addEvent(S.sheet.id, 'comment', text));
     renderSheet(); renderMain();
   },
-  share: async el => {
+  share: el => {
     const t = taskById(el.dataset.id);
     const text = `King Energy task\n*${t.title}*\nOwner: ${t.owner ? nameOf(t.owner) : 'NOBODY YET'}\nDue: ${t.due ? niceDate(t.due) : 'no date'}\nStatus: ${STATUS[t.status]}${isLate(t) ? ' (LATE)' : ''}\n${location.origin + location.pathname}`;
-    try {
-      const blob = await taskCardBlob(t);
-      const file = new File([blob], 'king-energy-task.png', { type: 'image/png' });
-      if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], text }); return; }
-      const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'king-energy-task.png'; a.click();
-      toast('Picture saved. Attach it in WhatsApp.');
-    } catch (e) { if (e && e.name === 'AbortError') return; console.warn(e); }
+    let file = null;
+    try { file = new File([taskCardBlob(t)], 'king-energy-task.png', { type: 'image/png' }); } catch (e) { console.warn(e); }
+    if (navigator.share) {
+      // Phones: use the phone's own share menu. The app itself never leaves this page.
+      const withPic = file && navigator.canShare && navigator.canShare({ files: [file] });
+      navigator.share(withPic ? { files: [file], text } : { text })
+        .catch(e => { if (!e || e.name !== 'AbortError') { console.warn(e); toast('Sharing did not work on this phone.'); } });
+      return;
+    }
+    // Computers: save the picture, then open WhatsApp in a new tab.
+    if (file) { const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = file.name; a.click(); toast('Picture saved. Attach it in WhatsApp.'); }
     window.open('https://wa.me/?text=' + encodeURIComponent(text), '_blank', 'noopener');
   },
   'del-task': async () => {
