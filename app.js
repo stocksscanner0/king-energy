@@ -287,10 +287,10 @@ function storeChanges(old, fields, extra, newFiles, removed) {
   const oe = o.extra || [], used = new Set();
   extra.forEach(x => {
     const i = oe.findIndex((y, j) => !used.has(j) && y.label === x.label);
-    if (i < 0) { lines.push('Added box: ' + x.label + ' = ' + x.value); return; }
+    if (i < 0) { lines.push('Added detail: ' + x.label + ' = ' + x.value); return; }
     used.add(i); if ((oe[i].value || '') !== x.value) lines.push(x.label + ': ' + (oe[i].value || '(empty)') + ' → ' + (x.value || '(empty)'));
   });
-  oe.forEach((y, j) => { if (!used.has(j)) lines.push('Removed box: ' + y.label + (y.value ? ' (was ' + y.value + ')' : '')); });
+  oe.forEach((y, j) => { if (!used.has(j)) lines.push('Removed detail: ' + y.label + (y.value ? ' (was ' + y.value + ')' : '')); });
   newFiles.forEach(f => lines.push('Added file: ' + kindPlain(f.kind) + ' – ' + f.name));
   removed.forEach(f => lines.push('Removed file: ' + kindPlain(f.kind || 'other') + ' – ' + f.name));
   return lines;
@@ -458,6 +458,25 @@ function taskSheet(t) {
   </div>`;
 }
 
+/* ---------- file viewer: shows the file inside the app, so the phone never lands on a blank page ---------- */
+function closeViewer() { const v = $('#viewer'); if (v) v.remove(); }
+async function openViewer(f) {
+  closeViewer();
+  const v = document.createElement('div'); v.id = 'viewer';
+  v.innerHTML = `<div class="sheet-head"><button type="button" data-act="viewer-close">← Back</button><span class="vname">${esc(f.name)}</span><span></span></div><div class="viewer-body"><p class="muted">Opening…</p></div>`;
+  document.body.appendChild(v);
+  const url = await safe(() => db.fileUrl(f), 'Could not open the file.');
+  if (!v.isConnected) return;
+  if (!url) { closeViewer(); return; }
+  const save = url.startsWith('blob:') ? url : url + (url.includes('?') ? '&' : '?') + 'download=' + encodeURIComponent(f.name);
+  const pic = isImage(f.name), body = $('.viewer-body', v);
+  body.innerHTML = (pic ? `<img src="${esc(url)}" alt="${esc(f.name)}">`
+    : `<div class="bigdoc">📄</div><p><b>${esc(f.name)}</b></p><p class="muted">Tap Open file to read it.</p>`)
+    + `<p class="row vbtns"><a class="btn go" href="${esc(url)}" target="_blank" rel="noopener">Open file</a><a class="btn" href="${esc(save)}" download="${esc(f.name)}">Save to phone</a></p>`;
+  const img = $('img', body);
+  if (img) img.addEventListener('error', () => { img.outerHTML = '<div class="bigdoc">🖼️</div><p class="muted">This picture cannot be shown here. Tap Open file.</p>'; });
+}
+
 function loadThumbs() {
   document.querySelectorAll('#sheet img[data-thumb]').forEach(async img => {
     const id = img.dataset.thumb, f = S.store_files.find(x => x.id === id); if (!f) return;
@@ -476,18 +495,18 @@ function storeFilesBlock(sh) {
       <button type="button" class="x" data-act="sf-del" data-id="${f.id}" aria-label="Remove">✕</button><span class="nm">${f.pending ? 'Not saved yet · ' : ''}${esc(f.name)}</span></div>`).join('')}</div>`;
   }).join('');
   const kind = d.kind || 'site', custom = kind === '__custom';
-  return `<label class="f">Contracts, pictures and files (${all.length})</label>
-    <p class="muted" style="margin:0 0 6px">Pick what it is, then tap Add. Files are kept when you tap Save store.</p>
+  return `<label class="f">Documents &amp; photos (${all.length})</label>
+    <p class="muted" style="margin:0 0 6px">What is this file? Pick it, then tap Add. Files are kept when you tap Save store.</p>
     <select class="in" id="sfKind">${KINDS.map(([k, l]) => `<option value="${k}"${kind === k ? ' selected' : ''}>${l}</option>`).join('')}<option value="__custom"${custom ? ' selected' : ''}>✏️ Custom (type your own)</option></select>
     ${custom ? `<input class="in" id="sfCustom" placeholder="Type a name, like Tank test report" value="${esc(d.customKind || '')}" style="margin-top:6px">` : ''}
-    <p><label class="btn go">+ Add file or picture<input type="file" id="storeFileIn" multiple hidden></label></p>
+    <p><label class="btn go">+ Add a file<input type="file" id="storeFileIn" multiple hidden></label></p>
     ${groups}`;
 }
 const xrowHtml = (x, i) => {
   const custom = x.custom || (!!x.label && !EXTRA_IDEAS.includes(x.label));
-  return `<div class="xrow"><select class="in" data-x="pick"><option value="">Pick one…</option>${EXTRA_IDEAS.map(v => `<option${!custom && x.label === v ? ' selected' : ''}>${esc(v)}</option>`).join('')}<option value="__custom"${custom ? ' selected' : ''}>✏️ Custom (type your own)</option></select>
-    <button type="button" data-act="x-del" data-i="${i}" aria-label="Remove box">✕</button>
-    ${custom ? `<input class="in" data-x="label" placeholder="Name of the box" value="${esc(x.label)}">` : ''}
+  return `<div class="xrow"><select class="in" data-x="pick"><option value="">Pick a detail…</option>${EXTRA_IDEAS.map(v => `<option${!custom && x.label === v ? ' selected' : ''}>${esc(v)}</option>`).join('')}<option value="__custom"${custom ? ' selected' : ''}>✏️ Custom (type your own)</option></select>
+    <button type="button" data-act="x-del" data-i="${i}" aria-label="Remove detail">✕</button>
+    ${custom ? `<input class="in" data-x="label" placeholder="Name of the detail" value="${esc(x.label)}">` : ''}
     <input class="in" data-x="value" placeholder="Answer" value="${esc(x.value)}"></div>`;
 };
 
@@ -507,9 +526,9 @@ function storeSheet(sh) {
     <label class="f">Landlord number</label><input class="in" type="tel" name="landlord_phone" value="${esc(d.landlord_phone)}">
     ${sh.id && (d.landlord_phone || '').replace(/[^\d+]/g, '') ? `<p><a class="btn" href="tel:${esc(d.landlord_phone.replace(/[^\d+]/g, ''))}">📞 Call landlord</a></p>` : ''}
     <label class="f">Landlord email</label><input class="in" type="email" name="landlord_email" value="${esc(d.landlord_email)}"></div>
-    <label class="f">More boxes (tanks, pumps, POS, anything)</label>
+    <label class="f">Store details (tanks, pumps, POS, anything)</label>
     <div id="xrows">${d.extra.map(xrowHtml).join('')}</div>
-    <button type="button" class="btn" data-act="x-add">+ Add a box</button>
+    <button type="button" class="btn" data-act="x-add">+ Add a detail</button>
     <label class="f">Notes</label><textarea class="in" name="notes">${esc(d.notes)}</textarea>
     ${storeFilesBlock(sh)}
     <p></p><button class="btn go wide" type="submit">Save store</button>
@@ -595,12 +614,8 @@ const ACT = {
     await safe(async () => { for (const f of files) await db.removeFile(f); await db.remove('tasks', t.id); });
     refresh();
   },
-  'open-file': async el => {
-    const f = S.files.find(x => x.id === el.dataset.id); const w = window.open('', '_blank');
-    const url = await safe(() => db.fileUrl(f), 'Could not open the file.');
-    if (!url) { if (w) w.close(); return; }
-    if (w) w.location = url; else location.href = url;
-  },
+  'open-file': el => { const f = S.files.find(x => x.id === el.dataset.id); if (f) openViewer(f); },
+  'viewer-close': () => closeViewer(),
   'del-file': async el => {
     const f = S.files.find(x => x.id === el.dataset.id);
     if (!confirm('Remove the file “' + f.name + '”?')) return;
@@ -619,12 +634,7 @@ const ACT = {
     await safe(async () => { for (const f of files) await db.removeFile(f, 'store_files'); await db.remove('stores', id); await logActivity('store', 'Store deleted: ' + s.name, 'The store and its ' + files.length + ' file(s) were removed.'); });
     refresh();
   },
-  'sf-open': async el => {
-    const f = S.store_files.find(x => x.id === el.dataset.id); const w = window.open('', '_blank');
-    const url = await safe(() => db.fileUrl(f), 'Could not open the file.');
-    if (!url) { if (w) w.close(); return; }
-    if (w) w.location = url; else location.href = url;
-  },
+  'sf-open': el => { const f = S.store_files.find(x => x.id === el.dataset.id); if (f) openViewer(f); },
   'sf-del': el => {
     const d = readStoreForm(), id = el.dataset.id, i = d.newFiles.findIndex(x => x.id === id);
     if (i >= 0) { if (d.newFiles[i].preview) URL.revokeObjectURL(d.newFiles[i].preview); d.newFiles.splice(i, 1); }
