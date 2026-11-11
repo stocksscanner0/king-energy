@@ -459,7 +459,17 @@ function taskSheet(t) {
 }
 
 /* ---------- file viewer: shows the file inside the app, so the phone never lands on a blank page ---------- */
-function closeViewer() { const v = $('#viewer'); if (v) v.remove(); }
+let viewing = null;
+function closeViewer() { const v = $('#viewer'); if (v) v.remove(); viewing = null; }
+async function saveViewing(el) {
+  // Never send the app itself to a download link: on a phone's home-screen app that can leave a stuck black screen.
+  const cur = viewing; if (!cur) return;
+  if (!cur.file) { toast(cur.failed ? 'Could not get the file. Tap Open file.' : 'Still getting the file. Tap again in a moment.'); return; }
+  try {
+    if (navigator.share && navigator.canShare && navigator.canShare({ files: [cur.file] })) await navigator.share({ files: [cur.file] });
+    else { const a = document.createElement('a'); a.href = URL.createObjectURL(cur.file); a.download = cur.file.name; a.click(); toast('Saved to your downloads.'); }
+  } catch (e) { if (!e || e.name !== 'AbortError') { console.warn(e); toast('Could not save it. Tap Open file.'); } }
+}
 async function openViewer(f) {
   closeViewer();
   const v = document.createElement('div'); v.id = 'viewer';
@@ -468,11 +478,14 @@ async function openViewer(f) {
   const url = await safe(() => db.fileUrl(f), 'Could not open the file.');
   if (!v.isConnected) return;
   if (!url) { closeViewer(); return; }
-  const save = url.startsWith('blob:') ? url : url + (url.includes('?') ? '&' : '?') + 'download=' + encodeURIComponent(f.name);
+  const cur = viewing = { id: f.id, file: null, failed: false };
+  fetch(url).then(r => { if (!r.ok) throw new Error('http ' + r.status); return r.blob(); })
+    .then(b => { cur.file = new File([b], f.name, { type: b.type || 'application/octet-stream' }); })
+    .catch(e => { cur.failed = true; console.warn(e); });
   const pic = isImage(f.name), body = $('.viewer-body', v);
   body.innerHTML = (pic ? `<img src="${esc(url)}" alt="${esc(f.name)}">`
     : `<div class="bigdoc">📄</div><p><b>${esc(f.name)}</b></p><p class="muted">Tap Open file to read it.</p>`)
-    + `<p class="row vbtns"><a class="btn go" href="${esc(url)}" target="_blank" rel="noopener">Open file</a><a class="btn" href="${esc(save)}" download="${esc(f.name)}">Save to phone</a></p>`;
+    + `<p class="row vbtns"><a class="btn go" href="${esc(url)}" target="_blank" rel="noopener">Open file</a><button type="button" class="btn" data-act="viewer-save">Save or share</button></p>`;
   const img = $('img', body);
   if (img) img.addEventListener('error', () => { img.outerHTML = '<div class="bigdoc">🖼️</div><p class="muted">This picture cannot be shown here. Tap Open file.</p>'; });
 }
@@ -616,6 +629,7 @@ const ACT = {
   },
   'open-file': el => { const f = S.files.find(x => x.id === el.dataset.id); if (f) openViewer(f); },
   'viewer-close': () => closeViewer(),
+  'viewer-save': el => saveViewing(el),
   'del-file': async el => {
     const f = S.files.find(x => x.id === el.dataset.id);
     if (!confirm('Remove the file “' + f.name + '”?')) return;
