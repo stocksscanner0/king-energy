@@ -230,8 +230,8 @@ const ping = (op, payload) => { db.fn(op, payload).catch(e => console.warn('aler
 async function checkAlerts() {
   if (!PUSH_OK) return;
   try {
-    const reg = await navigator.serviceWorker.register('sw.js');
-    const sub = await reg.pushManager.getSubscription();
+    const slow = new Promise((_, rej) => setTimeout(() => rej(new Error('alert check timed out')), 8000));
+    const sub = await Promise.race([slow, (async () => { const reg = await navigator.serviceWorker.register('sw.js'); return reg.pushManager.getSubscription(); })()]);
     alertsOn = !!sub && Notification.permission === 'granted';
     if (alertsOn) db.saveSub(sub.toJSON(), S.me).catch(() => {});
   } catch (e) { console.warn(e); }
@@ -780,14 +780,18 @@ async function start() {
     const who = S.me; await db.signOut(); S.me = null;
     renderLogin(who + ' is not on the King Energy list.'); return;
   }
-  await checkAlerts();
+  // Show the app first. The alert check can hang on a home-screen app, so it must never hold up the screen.
   renderMain();
+  checkAlerts().then(() => { if (alertsOn && !S.sheet) renderMain(); });
 }
 
 (async () => {
+  checkVersion(); // first, so a stuck start can still pick up a fixed version
+  setTimeout(() => {
+    if ($('#app .loading')) $('#app').innerHTML = '<p class="loading">This is taking too long.</p><p style="text-align:center"><button class="btn go" data-act="reload">Try again</button></p>';
+  }, 12000);
   try { await db.init(); await start(); }
-  catch (e) { console.error(e); $('#app').innerHTML = '<p class="loading">Could not start. Check your internet and reload.</p>'; }
-  checkVersion();
+  catch (e) { console.error(e); $('#app').innerHTML = '<p class="loading">Could not start. Check your internet.</p><p style="text-align:center"><button class="btn go" data-act="reload">Try again</button></p>'; }
   let lastWake = 0;
   const wake = () => { if (document.hidden || Date.now() - lastWake < 3000) return; lastWake = Date.now(); checkVersion(); if (S.me) refresh(); };
   document.addEventListener('visibilitychange', wake);
